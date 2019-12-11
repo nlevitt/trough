@@ -222,19 +222,22 @@ class TroughShell(cmd.Cmd):
         else:
             self.do_help('format')
 
-    async def async_select(self, segment, query):
-        result = await self.cli.async_read(segment, query)
-        try:
-            print('+++++ results from segment %s +++++' % segment,
-                  file=self.pager_pipe or sys.stdout)
-        except BrokenPipeError:
-            pass
-        return self.display(result) # returns number of rows
+    async def async_query(self, segment, query):
+        if query.lower().startswith('select '):
+            result = await self.cli.async_read(segment, query)
+            try:
+                print('+++++ results from segment %s +++++' % segment,
+                      file=self.pager_pipe or sys.stdout)
+            except BrokenPipeError:
+                pass
+            return self.display(result) # returns number of rows
+        else:
+            result = await self.cli.async_write(segment, query)
 
     async def async_fanout(self, query):
         tasks = []
         for segment in self.segments:
-            task = asyncio.ensure_future(self.async_select(segment, query))
+            task = asyncio.ensure_future(self.async_query(segment, query))
             tasks.append(task)
         results = await asyncio.gather(*tasks, return_exceptions=True)
         for i, result in enumerate(results):
@@ -347,12 +350,13 @@ class TroughShell(cmd.Cmd):
         if getattr(self, 'do_' + keyword.lower(), None):
             getattr(self, 'do_' + keyword.lower())(args)
         elif self.writable:
-            if len(self.segments) == 1:
-                self.cli.write(self.segments[0], line, schema_id=self.schema_id)
-            elif not self.segments:
+            if self.segments:
+                loop = asyncio.get_event_loop()
+                future = asyncio.ensure_future(self.async_fanout(line))
+                loop.run_until_complete(future)
+                print('attempted to write to %s segments' % len(self.segments))
+            else:
                 print('not connected to any segments')
-            elif len(self.segments) > 1:
-                print('writing to multiple segments not supported')
         else:
             self.logger.error(
                     'invalid command %r, and refusing to execute arbitrary '

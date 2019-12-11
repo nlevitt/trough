@@ -253,6 +253,28 @@ class TroughClient(object):
             self._write_url_cache.pop(segment_id, None)
             raise e
 
+    async def async_write(self, segment_id, sql_tmpl, values=(), schema_id='default'):
+        write_url = self.write_url(segment_id, schema_id)
+        sql = sql_tmpl % tuple(self.sql_value(v) for v in values)
+        sql_bytes = sql.encode('utf-8')
+
+        # async with ClientSession(timeout=ClientTimeout(total=1200)) as session:
+        async with ClientSession(read_timeout=1200) as session:
+            async with session.post(
+                    write_url, data=sql_bytes, headers={
+                        'content-type': 'application/sql;charset=utf-8'}) as res:
+                if res.status != 200:
+                    self._write_url_cache.pop(segment_id, None)
+                    text = await res.text('utf-8')
+                    raise TroughException(
+                            'unexpected response %r %r: %r from POST %r with '
+                            'payload %r' % (
+                                res.status, res.reason, text, write_url,
+                                sql_bytes))
+                if segment_id not in self._dirty_segments:
+                    with self._dirty_segments_lock:
+                        self._dirty_segments.add(segment_id)
+
     def read(self, segment_id, sql_tmpl, values=()):
         read_url = self.read_url(segment_id)
         sql = sql_tmpl % tuple(self.sql_value(v) for v in values)
